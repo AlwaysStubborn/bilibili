@@ -1,0 +1,30 @@
+*.log
+*.pyc
+*.pyd
+__pycache__/
+logs/
+.idea/
+.vscode/
+.venv/
+# 配置文件（敏感信息）
+config.toml
+
+# 数据文件
+history.json
+video_history.json
+bilibili_cookie.json
+video_cache.json
+
+# 构建和打包
+build/
+dist/
+*.spec
+
+# 开发环境
+.codebuddy/
+.workbuddy/
+prompt.txt
+tmp/
+.env
+.env.*
+!.env.example

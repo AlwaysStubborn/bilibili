@@ -7,3 +7,14 @@ public/
 .deploy*/
 src/_drafts
 .avoscloud/
+
+# bili-comment-bot secrets & runtime
+bili-comment-bot/config.toml
+bili-comment-bot/.venv/
+bili-comment-bot/logs/
+bili-comment-bot/history.json
+bili-comment-bot/video_history.json
+bili-comment-bot/bilibili_cookie.json
+bili-comment-bot/video_cache.json
+bili-comment-bot/__pycache__/
+bili-comment-bot/**/__pycache__/
