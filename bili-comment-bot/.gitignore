@@ -14,6 +14,8 @@ history.json
 video_history.json
 bilibili_cookie.json
 video_cache.json
+reply_feed_cursor.json
+ai_quota.json
 
 # 构建和打包
 build/

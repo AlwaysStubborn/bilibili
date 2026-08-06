@@ -15,6 +15,7 @@
 - 🌐 **Web UI 管理界面**：启动后自动打开浏览器，所有功能通过图形界面操作
 - 🤖 自动监控 B 站视频的新增评论
 - 🎯 **仅回复指定视频**：支持配置只回复某个特定视频的评论
+- 💬 **回复我的**：监控消息中心，别人回复你在任意视频下的评论时自动回（可与自己视频模式同时开启）
 - 🧠 使用 DeepSeek API 生成智能回复
 - 📝 **链式回复支持（楼中楼）**：监控并回复主评论下的子评论，实现多层对话互动
 - 👍 支持自动点赞评论（可选）
@@ -253,7 +254,12 @@ docker run -d \
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `enabled` | 是否启用自动回复 | true |
+| `enabled` | 是否启用自动回复（总开关） | true |
+| `own_videos_enabled` | 是否回复自己投稿视频下的评论 | true |
+| `reply_to_me_enabled` | 是否处理消息中心「回复我的」（跨视频） | true |
+| `per_user_interval` | 同一用户两次 AI 回复最小间隔（秒），0=不限 | 60 |
+| `daily_ai_limit` | 每日 DeepSeek 调用上限，0=不限 | 80 |
+| `skip_trivial` | 跳过哈哈哈/111 等水评 | true |
 | `prefix` | 回复前缀 | - |
 | `only_new` | 是否只回复未处理的评论 | true |
 | `max_process` | 每次最多处理的评论数 | 10 |
@@ -335,6 +341,8 @@ system_prompt = "你是一个友善的B站游戏区Minecraft UP主，请对评�
 
 [reply]
 enabled = true
+own_videos_enabled = true   # 自己投稿视频下的评论
+reply_to_me_enabled = true  # 消息中心「回复我的」（任意视频）
 prefix = ""
 only_new = true
 max_process = 10

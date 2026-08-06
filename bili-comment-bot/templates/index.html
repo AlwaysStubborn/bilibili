@@ -346,8 +346,21 @@
           <div class="form-group">
             <label class="form-check">
               <input type="checkbox" id="cfg-reply-enabled" checked>
-              启用自动回复
+              启用自动回复（总开关）
             </label>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" id="cfg-reply-own_videos_enabled" checked>
+              自己视频：回复自己投稿视频下的评论
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" id="cfg-reply-reply_to_me_enabled" checked>
+              回复我的：别人回复你在任意视频下的评论时自动回
+            </label>
+            <div class="form-hint">基于消息中心「回复我的」；首次启用只追新通知，不刷历史。目前仅处理视频评论。</div>
           </div>
           <div class="form-group">
             <label class="form-check">
@@ -382,6 +395,25 @@
               <label class="form-label">回复延迟（秒）</label>
               <input class="form-input" type="number" id="cfg-reply-reply_delay" value="2">
             </div>
+          </div>
+          <div class="card-title" style="margin-top:8px">防刷 / 控成本</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">同一用户冷却（秒）</label>
+              <input class="form-input" type="number" id="cfg-reply-per_user_interval" value="60" min="0">
+              <div class="form-hint">同一 mid 两次 AI 回复的最小间隔，0=不限制</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">每日 AI 调用上限</label>
+              <input class="form-input" type="number" id="cfg-reply-daily_ai_limit" value="80" min="0">
+              <div class="form-hint">达到后当天不再调 DeepSeek，0=不限制</div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" id="cfg-reply-skip_trivial" checked>
+              跳过水评（哈哈哈 / 111 等），不调 AI
+            </label>
           </div>
           <div class="form-group">
             <label class="form-label">上下文评论数（0=不使用上下文）</label>
@@ -900,7 +932,12 @@ function loadConfig() {
 
     const r = cfg.reply || {};
     set('cfg-reply-enabled', r.enabled);
+    set('cfg-reply-own_videos_enabled', r.own_videos_enabled !== false);
+    set('cfg-reply-reply_to_me_enabled', r.reply_to_me_enabled !== false);
     set('cfg-reply-only_new', r.only_new);
+    set('cfg-reply-per_user_interval', r.per_user_interval ?? 60);
+    set('cfg-reply-daily_ai_limit', r.daily_ai_limit ?? 80);
+    set('cfg-reply-skip_trivial', r.skip_trivial !== false);
     set('cfg-reply-like_enabled', r.like_enabled);
     set('cfg-reply-like_user_video_enabled', r.like_user_video_enabled);
     set('cfg-reply-like_user_video_only_followers', r.like_user_video_only_followers);
@@ -984,7 +1021,12 @@ function saveConfig() {
     },
     reply: {
       enabled: get('cfg-reply-enabled'),
+      own_videos_enabled: get('cfg-reply-own_videos_enabled'),
+      reply_to_me_enabled: get('cfg-reply-reply_to_me_enabled'),
       only_new: get('cfg-reply-only_new'),
+      per_user_interval: get('cfg-reply-per_user_interval'),
+      daily_ai_limit: get('cfg-reply-daily_ai_limit'),
+      skip_trivial: get('cfg-reply-skip_trivial'),
       like_enabled: get('cfg-reply-like_enabled'),
       like_user_video_enabled: get('cfg-reply-like_user_video_enabled'),
       like_user_video_only_followers: get('cfg-reply-like_user_video_only_followers'),

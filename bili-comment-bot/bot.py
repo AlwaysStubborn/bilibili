@@ -29,6 +29,22 @@ CONFIG_FILE = os.path.join(DATA_DIR, "config.toml") if DATA_DIR else "config.tom
 HISTORY_FILE = os.path.join(DATA_DIR, "history.json") if DATA_DIR else "history.json"
 COOKIE_FILE = os.path.join(DATA_DIR, "bilibili_cookie.json") if DATA_DIR else "bilibili_cookie.json"
 VIDEO_CACHE_FILE = os.path.join(DATA_DIR, "video_cache.json") if DATA_DIR else "video_cache.json"
+REPLY_FEED_CURSOR_FILE = (
+    os.path.join(DATA_DIR, "reply_feed_cursor.json") if DATA_DIR else "reply_feed_cursor.json"
+)
+AI_QUOTA_FILE = os.path.join(DATA_DIR, "ai_quota.json") if DATA_DIR else "ai_quota.json"
+
+DEFAULT_SYSTEM_PROMPT = (
+    "你是B站冲浪多年的老用户，帮账号主人回评论区。性格随意、有点皮，说话直接，"
+    "像微信跟朋友聊天，不要端着。\n"
+    "硬性规矩：\n"
+    "1. 短句优先，一般控制在80字内；一句话能说清就别拆两句。\n"
+    "2. 绝对禁止：首先/其次/最后、综上所述、总而言之、值得注意的是、不可否认、"
+    "赋能、底层逻辑、深度剖析、作为AI、很高兴为你服务、希望我的回答对你有帮助。\n"
+    "3. 可自然用「哈哈」「确实」「懂了」，别每句都用，别硬玩梗。\n"
+    "4. 不人身攻击、不泄露隐私、不承诺做不到的事。\n"
+    "5. 对方只是水评时，用极短一句带过即可。"
+)
 
 # ─────────────────────────────────────────────
 #  默认配置
@@ -61,12 +77,14 @@ DEFAULT_CONFIG = {
         "api_key": "",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-chat",
-        "max_tokens": 200,
-        "temperature": 0.7,
-        "system_prompt": "你是一位友善的 B 站 UP 主助手，负责回复自己视频下的观众评论。语气自然友好，简洁明了，控制在100字以内。不要人身攻击，不要泄露隐私。",
+        "max_tokens": 120,
+        "temperature": 0.85,
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
     },
     "reply": {
         "enabled": True,
+        "own_videos_enabled": True,
+        "reply_to_me_enabled": True,
         "prefix": "",
         "only_new": True,
         "max_process": 10,
@@ -78,6 +96,10 @@ DEFAULT_CONFIG = {
         "like_user_video_only_followers": False,
         "chained_reply_enabled": True,
         "max_reply_depth": 3,
+        # 防刷 / 控成本（本 bot 无对外 API，不做 IP 黑白名单）
+        "per_user_interval": 60,
+        "daily_ai_limit": 80,
+        "skip_trivial": True,
         "keyword_filter": {
             "enabled": False,
             "whitelist": "",
@@ -362,6 +384,13 @@ class BiliCommentBot:
         self.video_cache_expire_time = vc.get("expire_time", 43200)
         self.load_video_cache()
 
+        # 「回复我的」消息中心水位
+        self.reply_feed_cursor: dict = self.load_reply_feed_cursor()
+
+        # AI 调用防刷：单用户冷却 + 每日配额
+        self._user_last_ai: Dict[str, float] = {}
+        self._ai_quota: dict = self.load_ai_quota()
+
         # 运行状态
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -423,6 +452,7 @@ class BiliCommentBot:
             return False
         self._running = True
         self._stop_event.clear()
+        self.cache = {}  # 避免沿用空评论等过期缓存
         self.stats["start_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -608,7 +638,14 @@ class BiliCommentBot:
                 if use_cache and method.upper() == "GET" and response.status_code == 200:
                     try:
                         data = response.json()
-                        self.set_cache(self.get_cache_key(url, kwargs.get("params")), data)
+                        # 不缓存业务失败或空评论列表，避免「一次空结果卡满整个缓存期」
+                        bili_code = data.get("code", 0)
+                        replies = (data.get("data") or {}).get("replies")
+                        cacheable = bili_code == 0
+                        if cacheable and "/x/v2/reply" in url and not replies:
+                            cacheable = False
+                        if cacheable:
+                            self.set_cache(self.get_cache_key(url, kwargs.get("params")), data)
                     except Exception:
                         pass
                 return response
@@ -703,6 +740,112 @@ class BiliCommentBot:
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.logger.error(f"保存视频缓存失败: {e}")
+
+    # ── 「回复我的」水位 ──
+    def load_reply_feed_cursor(self) -> dict:
+        default = {
+            "initialized": False,
+            "last_reply_time": 0,
+            "last_id": 0,
+            "processed_notify_ids": [],
+        }
+        try:
+            if os.path.exists(REPLY_FEED_CURSOR_FILE):
+                with open(REPLY_FEED_CURSOR_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    default.update(data)
+                    if not isinstance(default.get("processed_notify_ids"), list):
+                        default["processed_notify_ids"] = []
+                    return default
+        except Exception as e:
+            self.logger.error(f"加载回复我的水位失败: {e}")
+        return default
+
+    def save_reply_feed_cursor(self, cursor: dict = None):
+        data = cursor if cursor is not None else self.reply_feed_cursor
+        try:
+            ids = data.get("processed_notify_ids") or []
+            if len(ids) > 500:
+                data["processed_notify_ids"] = ids[-500:]
+            with open(REPLY_FEED_CURSOR_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.reply_feed_cursor = data
+        except Exception as e:
+            self.logger.error(f"保存回复我的水位失败: {e}")
+
+    def load_ai_quota(self) -> dict:
+        today = datetime.now().strftime("%Y-%m-%d")
+        default = {"date": today, "count": 0}
+        try:
+            if os.path.exists(AI_QUOTA_FILE):
+                with open(AI_QUOTA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get("date") == today:
+                    return {"date": today, "count": int(data.get("count") or 0)}
+        except Exception as e:
+            self.logger.error(f"加载 AI 配额失败: {e}")
+        return default
+
+    def save_ai_quota(self):
+        try:
+            with open(AI_QUOTA_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._ai_quota, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.error(f"保存 AI 配额失败: {e}")
+
+    def _ensure_ai_quota_day(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._ai_quota.get("date") != today:
+            self._ai_quota = {"date": today, "count": 0}
+
+    def can_call_ai(self, uid: str) -> Tuple[bool, str]:
+        """调用 DeepSeek 前的防刷检查。"""
+        self._ensure_ai_quota_day()
+        daily_limit = int(self.config["reply"].get("daily_ai_limit", 80) or 0)
+        if daily_limit > 0 and int(self._ai_quota.get("count") or 0) >= daily_limit:
+            return False, f"今日 AI 调用已达上限 ({daily_limit})"
+
+        interval = float(self.config["reply"].get("per_user_interval", 60) or 0)
+        if interval > 0 and uid:
+            last = self._user_last_ai.get(str(uid), 0)
+            elapsed = time.time() - last
+            if elapsed < interval:
+                return False, f"用户 {uid} 冷却中（还需 {interval - elapsed:.0f}s）"
+        return True, ""
+
+    def record_ai_call(self, uid: str):
+        self._ensure_ai_quota_day()
+        self._ai_quota["count"] = int(self._ai_quota.get("count") or 0) + 1
+        if uid:
+            self._user_last_ai[str(uid)] = time.time()
+        self.save_ai_quota()
+
+    @staticmethod
+    def _is_trivial_comment(content: str) -> bool:
+        """识别无实质水评，避免浪费 Token。"""
+        s = (content or "").strip()
+        if not s:
+            return True
+        compact = re.sub(r"[\s\W_]+", "", s, flags=re.UNICODE)
+        if not compact:
+            return True
+        if re.fullmatch(r"[16]+", compact):
+            return True
+        if re.fullmatch(r"(哈){2,}", compact) or re.fullmatch(r"(呵){2,}", compact):
+            return True
+        if len(compact) <= 3 and re.fullmatch(
+            r"[哈呵嘿啊哦嗯草绝好的了哟嘛呀哇额]+", compact
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _bvid_from_uri(uri: str) -> str:
+        if not uri:
+            return ""
+        m = re.search(r"(BV[\w]+)", uri)
+        return m.group(1) if m else ""
 
     def get_video_list(self) -> List[dict]:
         uid = self.config["bilibili"].get("uid")
@@ -829,12 +972,16 @@ class BiliCommentBot:
         while pn <= max_pn:
             params = {"type": 1, "oid": aid, "pn": pn, "ps": page_size, "sort": 2}
             try:
-                response = self.make_request_with_retry("GET", url, params=params)
+                # 评论列表不走内存缓存，否则空结果/旧结果会卡满 cache_expire_time
+                response = self.make_request_with_retry(
+                    "GET", url, params=params, use_cache=False
+                )
                 if not response:
+                    self.logger.warning(f"获取评论无响应: {bvid} aid={aid}")
                     break
                 data = response.json()
                 if data.get("code") == 0:
-                    replies = data.get("data", {}).get("replies", [])
+                    replies = data.get("data", {}).get("replies") or []
                     if not replies:
                         break
 
@@ -877,7 +1024,11 @@ class BiliCommentBot:
                     pn += 1
                 else:
                     err = data.get("message", "")
-                    if "ps out of bounds" in err and pn == 1 and page_size > 10:
+                    code = data.get("code")
+                    self.logger.warning(
+                        f"获取评论失败: bvid={bvid} aid={aid} code={code} msg={err}"
+                    )
+                    if "ps out of bounds" in str(err) and pn == 1 and page_size > 10:
                         page_size = 10
                         continue
                     break
@@ -885,10 +1036,9 @@ class BiliCommentBot:
                 self.logger.error(f"获取评论异常: {e}")
                 break
 
-        if chained_reply_enabled:
-            main_count = sum(1 for c in all_comments if c.depth == 0)
-            child_count = len(all_comments) - main_count
-            self.logger.info(f"共获取 {main_count} 条主评论和 {child_count} 条子评论")
+        main_count = sum(1 for c in all_comments if c.depth == 0)
+        child_count = len(all_comments) - main_count
+        self.logger.info(f"共获取 {main_count} 条主评论和 {child_count} 条子评论")
 
         return all_comments
 
@@ -908,7 +1058,9 @@ class BiliCommentBot:
         while True:
             params = {"type": 1, "oid": aid, "root": root_comment_id, "pn": pn, "ps": page_size}
             try:
-                response = self.make_request_with_retry("GET", url, params=params)
+                response = self.make_request_with_retry(
+                    "GET", url, params=params, use_cache=False
+                )
                 if not response:
                     break
 
@@ -955,10 +1107,49 @@ class BiliCommentBot:
         return all_replies
 
     # ── DeepSeek 回复生成 ──
-    def generate_reply(self, comment: str, context: List[Comment] = None, video_title: str = None, video_desc: str = None) -> Optional[str]:
+    @staticmethod
+    def _extract_assistant_text(message: dict) -> str:
+        """兼容普通模型 content 与推理模型 reasoning_content。"""
+        text = (message.get("content") or "").strip()
+        if text:
+            return text
+        reasoning = (message.get("reasoning_content") or "").strip()
+        if not reasoning:
+            return ""
+        # 推理额度占满时 content 常为空：尽量取末尾像口语回复的短句
+        lines = [ln.strip() for ln in reasoning.replace("\r", "").split("\n") if ln.strip()]
+        for ln in reversed(lines):
+            if len(ln) < 2 or len(ln) > 120:
+                continue
+            if ln.startswith(("#", "-", "*", ">", "```")):
+                continue
+            if any(k in ln for k in ("首先", "其次", "综上所述", "作为AI", "用户想", "我应该", "让我")):
+                continue
+            return ln
+        # 兜底：截断推理末尾
+        tail = reasoning[-80:].strip()
+        return tail if len(tail) >= 2 else ""
+
+    def generate_reply(
+        self,
+        comment: str,
+        context: List[Comment] = None,
+        video_title: str = None,
+        video_desc: str = None,
+        uid: str = "",
+    ) -> Optional[str]:
+        ok, reason = self.can_call_ai(uid)
+        if not ok:
+            self.logger.warning(f"跳过 AI 调用: {reason}")
+            return None
+
         api_config = self.config["deepseek"]
-        headers = {"Authorization": f"Bearer {api_config['api_key']}", "Content-Type": "application/json"}
-        system_prompt = api_config.get("system_prompt", "你是一个友善的B站UP主，请对评论做出自然、友好的回复。控制在100字以内。")
+        api_key = (api_config.get("api_key") or "").strip()
+        if not api_key or api_key.startswith("sk-xxx"):
+            self.logger.error("DeepSeek API Key 未配置或仍是占位符")
+            return None
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        system_prompt = api_config.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
         messages = [{"role": "system", "content": system_prompt}]
         video_context = ""
         if video_title or video_desc:
@@ -975,10 +1166,18 @@ class BiliCommentBot:
                     ctx_text += f"{i}. {c.user}: {c.content}\n"
             messages.append({"role": "user", "content": ctx_text.strip()})
         messages.append({"role": "user", "content": comment})
+        model = api_config.get("model") or "deepseek-chat"
+        max_tokens = int(api_config.get("max_tokens") or 120)
+        # 推理型模型（v4/flash/reasoner）会先占 reasoning_content，max_tokens 过小会导致 content 为空
+        if any(k in model.lower() for k in ("reasoner", "v4", "flash")) and max_tokens < 512:
+            self.logger.info(
+                f"模型 {model} 为推理型，max_tokens 从 {max_tokens} 提升到 1024，避免 content 被推理占满"
+            )
+            max_tokens = 1024
         data = {
-            "model": api_config["model"],
+            "model": model,
             "messages": messages,
-            "max_tokens": api_config["max_tokens"],
+            "max_tokens": max_tokens,
             "temperature": api_config["temperature"],
         }
         try:
@@ -988,10 +1187,21 @@ class BiliCommentBot:
                 try:
                     response = self.session.post(
                         f"{api_config['base_url']}/chat/completions",
-                        headers=headers, json=data, timeout=30,
+                        headers=headers, json=data, timeout=60,
                     )
                     if response.status_code == 200:
-                        return response.json()["choices"][0]["message"]["content"].strip()
+                        try:
+                            body = response.json()
+                            msg = ((body.get("choices") or [{}])[0].get("message") or {})
+                            text = self._extract_assistant_text(msg)
+                        except Exception as parse_err:
+                            self.logger.error(f"DeepSeek 响应解析失败: {parse_err}; body={response.text[:200]}")
+                            return None
+                        if not text:
+                            self.logger.error(f"DeepSeek 返回空内容: {response.text[:300]}")
+                            return None
+                        self.record_ai_call(uid)
+                        return text
                     self.logger.error(f"DeepSeek API失败: {response.status_code} {response.text[:200]}")
                     if attempt < max_attempts - 1:
                         wait = self.retry_delay * (2 ** attempt) + random.uniform(0, 2)
@@ -1121,6 +1331,28 @@ class BiliCommentBot:
             return False
 
     def reply_comment(self, bvid: str, comment_id: str, content: str, root_id: str = None, parent_id: str = None) -> bool:
+        aid = self.bvid_to_aid(bvid)
+        if not aid:
+            self.logger.error(f"BVID 转 AID 失败: {bvid}")
+            return False
+        return self.reply_comment_by_oid(
+            oid=aid,
+            parent_id=parent_id or comment_id,
+            content=content,
+            root_id=root_id or comment_id,
+            type_=1,
+            log_ref=bvid,
+        )
+
+    def reply_comment_by_oid(
+        self,
+        oid: str,
+        parent_id: str,
+        content: str,
+        root_id: str = None,
+        type_: int = 1,
+        log_ref: str = "",
+    ) -> bool:
         if self.cookie_manager:
             self.csrf_token = self.cookie_manager._get_csrf_from_cookie()
         if not self.csrf_token:
@@ -1133,16 +1365,19 @@ class BiliCommentBot:
                 return False
 
         url = "https://api.bilibili.com/x/v2/reply/add"
-        aid = self.bvid_to_aid(bvid)
         prefix = self.config["reply"].get("prefix", "")
-
-        root = root_id if root_id else comment_id
-        parent = parent_id if parent_id else comment_id
-
-        data = {"type": 1, "oid": aid, "root": root, "parent": parent, "message": f"{prefix}{content}", "csrf": self.csrf_token}
-
-        reply_type = "楼中楼回复" if root_id else "主评论回复"
-        self.logger.debug(f"{reply_type}: bvid={bvid}, root={root}, parent={parent}, comment_id={comment_id}")
+        root = root_id if root_id and str(root_id) not in ("", "0") else parent_id
+        parent = parent_id
+        data = {
+            "type": type_,
+            "oid": str(oid),
+            "root": root,
+            "parent": parent,
+            "message": f"{prefix}{content}",
+            "csrf": self.csrf_token,
+        }
+        ref = log_ref or f"oid={oid}"
+        self.logger.debug(f"发评: {ref}, root={root}, parent={parent}")
 
         try:
             response = self.make_request_with_retry("POST", url, data=data)
@@ -1150,13 +1385,235 @@ class BiliCommentBot:
                 return False
             result = response.json()
             if result.get("code") == 0:
-                self.logger.info(f"回复成功: {comment_id} (类型: {reply_type})")
+                self.logger.info(f"回复成功: parent={parent} ({ref})")
                 return True
             self.logger.error(f"回复失败: {result.get('message')}")
             return False
         except Exception as e:
             self.logger.error(f"回复异常: {e}")
             return False
+
+    def get_reply_notifications(self, max_pages: int = 5, min_reply_time: int = 0) -> List[dict]:
+        """拉取消息中心「回复我的」列表（新→旧），可按水位截断。"""
+        url = "https://api.bilibili.com/x/msgfeed/reply"
+        results: List[dict] = []
+        cursor_id = None
+        cursor_time = None
+
+        for page in range(max_pages):
+            params = {"platform": "web", "build": 0, "mobi_app": "web"}
+            if cursor_id is not None:
+                params["id"] = cursor_id
+                params["reply_time"] = cursor_time or 0
+            try:
+                response = self.make_request_with_retry("GET", url, params=params)
+                if not response:
+                    break
+                payload = response.json()
+                if payload.get("code") != 0:
+                    self.logger.error(f"获取回复我的失败: {payload.get('message')}")
+                    break
+                data = payload.get("data") or {}
+                items = data.get("items") or []
+                if not items:
+                    break
+
+                reached_old = False
+                for raw in items:
+                    item = raw.get("item") or {}
+                    user = raw.get("user") or {}
+                    reply_time = int(raw.get("reply_time") or 0)
+                    notify_id = raw.get("id")
+                    if min_reply_time and reply_time < min_reply_time:
+                        reached_old = True
+                        continue
+                    results.append({
+                        "id": notify_id,
+                        "reply_time": reply_time,
+                        "mid": str(user.get("mid") or ""),
+                        "nickname": user.get("nickname") or "",
+                        "subject_id": str(item.get("subject_id") or ""),
+                        "root_id": str(item.get("root_id") or "0"),
+                        "source_id": str(item.get("source_id") or ""),
+                        "target_id": str(item.get("target_id") or ""),
+                        "business_id": int(item.get("business_id") or 0),
+                        "title": item.get("title") or "",
+                        "uri": item.get("uri") or "",
+                        "source_content": item.get("source_content") or "",
+                        "target_reply_content": item.get("target_reply_content") or "",
+                        "hide_reply_button": bool(item.get("hide_reply_button")),
+                    })
+
+                cursor = data.get("cursor") or {}
+                if reached_old or cursor.get("is_end"):
+                    break
+                cursor_id = cursor.get("id")
+                cursor_time = cursor.get("time")
+                if not cursor_id:
+                    break
+            except Exception as e:
+                self.logger.error(f"获取回复我的异常: {e}")
+                break
+
+        return results
+
+    def process_reply_feed(self):
+        """处理消息中心「回复我的」：别人回复你在任意视频下的评论时自动回复。"""
+        self.logger.info("检查「回复我的」通知...")
+        cursor = self.reply_feed_cursor or self.load_reply_feed_cursor()
+
+        if not cursor.get("initialized"):
+            items = self.get_reply_notifications(max_pages=1)
+            if items:
+                newest = max(items, key=lambda x: (x["reply_time"], x["id"] or 0))
+                cursor = {
+                    "initialized": True,
+                    "last_reply_time": newest["reply_time"],
+                    "last_id": newest["id"] or 0,
+                    "processed_notify_ids": [],
+                }
+            else:
+                cursor = {
+                    "initialized": True,
+                    "last_reply_time": int(time.time()),
+                    "last_id": 0,
+                    "processed_notify_ids": [],
+                }
+            self.save_reply_feed_cursor(cursor)
+            self.logger.info("「回复我的」水位已初始化，仅处理此后的新通知")
+            return
+
+        last_time = int(cursor.get("last_reply_time") or 0)
+        last_id = cursor.get("last_id") or 0
+        processed_ids = set(str(x) for x in (cursor.get("processed_notify_ids") or []))
+        my_uid = str(self.config["bilibili"].get("uid") or "")
+
+        # 略早于水位多拉一点，再用 id/time 精确过滤
+        min_time = max(0, last_time - 1)
+        items = self.get_reply_notifications(max_pages=5, min_reply_time=min_time)
+        candidates = []
+        for n in items:
+            if n["business_id"] != 1:
+                continue
+            nid = str(n["id"] or "")
+            if nid and nid in processed_ids:
+                continue
+            rt = n["reply_time"]
+            if rt < last_time:
+                continue
+            if rt == last_time and n["id"] is not None and last_id and n["id"] <= last_id:
+                continue
+            candidates.append(n)
+
+        # 旧→新处理，避免乱序
+        candidates.sort(key=lambda x: (x["reply_time"], x["id"] or 0))
+        max_process = self.config["reply"].get("max_process", 10)
+        processed_count = 0
+        newest_time = last_time
+        newest_id = last_id
+
+        def _mark_seen(n_item: dict):
+            nonlocal newest_time, newest_id
+            nid_local = str(n_item["id"] or "")
+            if nid_local:
+                processed_ids.add(nid_local)
+            if n_item["reply_time"] > newest_time or (
+                n_item["reply_time"] == newest_time
+                and (n_item["id"] or 0) > (newest_id or 0)
+            ):
+                newest_time = n_item["reply_time"]
+                newest_id = n_item["id"] or newest_id
+
+        for n in candidates:
+            source_id = n["source_id"]
+            if not source_id or not n["subject_id"]:
+                _mark_seen(n)
+                continue
+
+            if my_uid and n["mid"] == my_uid:
+                self.logger.debug(f"跳过自己的回复通知: {source_id}")
+                _mark_seen(n)
+                continue
+            if n["hide_reply_button"]:
+                _mark_seen(n)
+                continue
+            if source_id in self.processed_comments:
+                _mark_seen(n)
+                continue
+
+            if processed_count >= max_process:
+                break
+
+            self.processed_comments.add(source_id)
+            comment = Comment(
+                comment_id=source_id,
+                content=n["source_content"] or "",
+                user=n["nickname"] or "",
+                uid=n["mid"],
+                time=n["reply_time"],
+                parent_id=n["target_id"] if n["target_id"] not in ("", "0") else None,
+                root_id=n["root_id"] if n["root_id"] not in ("", "0") else source_id,
+                depth=1,
+            )
+            passed, reason = self._check_filters(comment)
+            if not passed:
+                self.logger.debug(f"跳过回复我的 {source_id}: {reason}")
+                _mark_seen(n)
+                continue
+
+            bvid = self._bvid_from_uri(n["uri"])
+            title = n["title"] or (bvid or f"oid={n['subject_id']}")
+            self.logger.info(
+                f"[回复我的] [{comment.user}] {comment.content[:40]}... @ {title}"
+            )
+
+            context = []
+            if n["target_reply_content"]:
+                context.append(Comment(
+                    comment_id=n["target_id"] or "0",
+                    content=n["target_reply_content"],
+                    user="我",
+                    uid=my_uid,
+                    time=0,
+                ))
+
+            reply = self.generate_reply(comment.content, context, title, "", uid=comment.uid)
+            if not reply:
+                self.logger.warning(f"[回复我的] 生成回复失败，跳过 {source_id}")
+                self.processed_comments.discard(source_id)
+                break  # 保留水位，下轮重试
+
+            root_id = n["root_id"] if n["root_id"] not in ("", "0") else source_id
+            ok = self.reply_comment_by_oid(
+                oid=n["subject_id"],
+                parent_id=source_id,
+                content=reply,
+                root_id=root_id,
+                type_=1,
+                log_ref=bvid or f"oid={n['subject_id']}",
+            )
+            if not ok:
+                self.processed_comments.discard(source_id)
+                break
+
+            self.save_history(comment, reply)
+            processed_count += 1
+            self.stats["total_replied"] += 1
+            _mark_seen(n)
+
+            delay = self.config["reply"].get("reply_delay", 2)
+            if delay > 0:
+                time.sleep(delay)
+
+        cursor["last_reply_time"] = newest_time
+        cursor["last_id"] = newest_id
+        cursor["processed_notify_ids"] = list(processed_ids)
+        cursor["initialized"] = True
+        self.save_reply_feed_cursor(cursor)
+        if processed_count:
+            self.logger.info(f"[回复我的] 本轮回复 {processed_count} 条")
+        else:
+            self.logger.info("[回复我的] 本轮无新通知需要回复")
 
     def refresh_cookie_if_needed(self):
         if not self.cookie_manager or not self.cookie_manager.refresh_token:
@@ -1182,6 +1639,17 @@ class BiliCommentBot:
         if not self.config["reply"].get("enabled", True):
             return
 
+        if self.config["reply"].get("own_videos_enabled", True):
+            self.process_own_video_comments()
+        else:
+            self.logger.debug("已关闭「自己视频」自动回复")
+
+        if self.config["reply"].get("reply_to_me_enabled", True):
+            self.process_reply_feed()
+        else:
+            self.logger.debug("已关闭「回复我的」自动回复")
+
+    def process_own_video_comments(self):
         only_bvid = self.config["reply"].get("only_bvid", "").strip()
         if only_bvid:
             self.logger.info(f"仅回复指定视频: {only_bvid}")
@@ -1242,9 +1710,12 @@ class BiliCommentBot:
                         if comments[i].comment_id != comment.parent_id:
                             context.append(comments[i])
 
-                reply = self.generate_reply(comment.content, context, title, video.get("desc", ""))
+                reply = self.generate_reply(
+                    comment.content, context, title, video.get("desc", ""), uid=comment.uid
+                )
                 if not reply:
-                    self.logger.warning(f"生成回复失败，跳过评论 {comment.comment_id}")
+                    self.logger.warning(f"生成回复失败，本轮跳过评论 {comment.comment_id}（下轮可重试）")
+                    self.processed_comments.discard(comment.comment_id)
                     continue
 
                 if self.config["reply"].get("like_enabled", False):
@@ -1304,6 +1775,10 @@ class BiliCommentBot:
 
     def _check_filters(self, comment: Comment) -> tuple:
         """检查评论是否通过所有过滤器。返回 (通过, 跳过原因)"""
+        # ── 水评（先于 AI，省 Token）──
+        if self.config["reply"].get("skip_trivial", True) and self._is_trivial_comment(comment.content):
+            return False, "水评/无实质内容"
+
         # ── 长度过滤 ──
         lf = self.config["reply"].get("length_filter", {})
         if lf.get("enabled", False):
@@ -1365,6 +1840,7 @@ class BiliCommentBot:
         return True, ""
 
     def get_stats(self) -> dict:
+        self._ensure_ai_quota_day()
         return {
             "running": self._running,
             "total_replied": self.stats["total_replied"],
@@ -1372,6 +1848,8 @@ class BiliCommentBot:
             "last_check": self.stats["last_check"],
             "processed_count": len(self.processed_comments),
             "cached_videos": len(self.cached_videos),
+            "ai_calls_today": int(self._ai_quota.get("count") or 0),
+            "daily_ai_limit": int(self.config["reply"].get("daily_ai_limit", 80) or 0),
         }
 
     def verify_login(self) -> dict:

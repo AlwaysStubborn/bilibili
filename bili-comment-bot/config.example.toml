@@ -51,17 +51,27 @@ api_key = "sk-xxx"
 base_url = "https://api.deepseek.com"
 # 使用的模型（常用：deepseek-chat；也可试 deepseek-reasoner）
 model = "deepseek-chat"
-# 最大回复长度
-max_tokens = 200
-# 温度参数（0-1，控制回复的随机性）
-temperature = 0.7
-# 系统提示词（定义AI的角色和行为）
-system_prompt = "你是一位友善的 B 站 UP 主助手，负责回复自己视频下的观众评论。语气自然友好，简洁明了，控制在100字以内。不要人身攻击，不要泄露隐私。"
+# 最大回复长度（deepseek-v4-flash 等推理模型建议 >=1024，过小会导致 content 为空）
+max_tokens = 1024
+# 温度参数（0-1，略高更口语）
+temperature = 0.85
+# 系统提示词（去AI味；可按人设自行改）
+system_prompt = """你是B站冲浪多年的老用户，帮账号主人回评论区。性格随意、有点皮，说话直接，像微信跟朋友聊天，不要端着。
+硬性规矩：
+1. 短句优先，一般控制在80字内；一句话能说清就别拆两句。
+2. 绝对禁止：首先/其次/最后、综上所述、总而言之、值得注意的是、不可否认、赋能、底层逻辑、深度剖析、作为AI、很高兴为你服务、希望我的回答对你有帮助。
+3. 可自然用「哈哈」「确实」「懂了」，别每句都用，别硬玩梗。
+4. 不人身攻击、不泄露隐私、不承诺做不到的事。
+5. 对方只是水评时，用极短一句带过即可。"""
 
 # 回复配置
 [reply]
-# 是否启用自动回复
+# 是否启用自动回复（总开关）
 enabled = true
+# 是否回复自己投稿视频下的评论
+own_videos_enabled = true
+# 是否回复消息中心「回复我的」（别人回复你在任意视频下的评论）
+reply_to_me_enabled = true
 # 回复前缀
 prefix = "🤖 "
 # 是否只回复未处理的评论
@@ -70,6 +80,12 @@ only_new = true
 max_process = 10
 # 回复延迟（秒，避免频繁操作）
 reply_delay = 2
+# 同一用户两次 AI 回复的最小间隔（秒），0=不限制
+per_user_interval = 60
+# 每日最多调用 DeepSeek 次数，0=不限制
+daily_ai_limit = 80
+# 跳过「哈哈哈」「111」等水评，不调 AI
+skip_trivial = true
 # 生成回复时使用前N条评论作为上下文（0表示不使用上下文）
 context_comments_count = 10
 # 仅回复指定视频（留空则回复所有视频，填写BVID如BV1xx411c7mD则仅回复该视频）

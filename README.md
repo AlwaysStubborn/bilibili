@@ -1,40 +1,41 @@
-# Vue.js 中文文档
+# bilibili
 
-该站点基于 [Hexo](https://hexo.io/) 构建而成。网站内容在 `src` 文件夹内，格式为 Markdown。欢迎 issue 或 pull request。
+B 站评论/数据相关工具仓库。当前主体为内嵌的 [BiliCommentBot](https://github.com/Janson20/BiliCommentBot)（MIT）。
 
-英文原版仓库地址：https://github.com/vuejs/vuejs.org
+## 目录
 
-## 开发
+- [`bili-comment-bot/`](bili-comment-bot/) — DeepSeek 自动回复；支持「自己视频评论区」与消息中心「回复我的」（跨视频）；含 Web UI
 
-``` bash
-$ npm install
-$ npm start # 开发服务器地址为 http://localhost:4000
+更细的说明见 [`bili-comment-bot/README.md`](bili-comment-bot/README.md) 与 [`bili-comment-bot/SETUP.md`](bili-comment-bot/SETUP.md)。
+
+## 快速启动
+
+```bash
+cd bili-comment-bot
+python -m venv .venv
+# Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+# macOS / Linux:
+# source .venv/bin/activate
+pip install -r requirements.txt
+copy config.example.toml config.toml   # Windows
+# cp config.example.toml config.toml   # macOS / Linux
+python main.py
 ```
 
-## 部署
+浏览器打开 `http://127.0.0.1:5000`，在 Web UI 中扫码登录、配置后启动。
 
-该站点通过 [Netlify](https://www.netlify.com/) 对 `master` 分支进行自动部署。
+Windows 若控制台报编码错误，可先设置：
 
-## 如何参与贡献
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+$env:PYTHONUTF8='1'
+```
 
-目前网站处于维护状态，我们会定期同步英文版的更新，包括[文档内容](https://github.com/vuejs/vuejs.org/tree/master/src)和[前端代码](https://github.com/vuejs/vuejs.org/tree/master/themes/vue)等。欢迎大家：
+## 合规
 
-* 同步英文站点最新的改动到这里
-* 修复错别字或错误的书写格式
-* 发 issue 讨论译法或书写格式
-* 发 issue 讨论部署或协作流程上的问题
+请遵守 B 站用户协议与社区规范；注意限频。本工具面向自己稿件评论区、以及别人回复你评论后的自动回应等合法使用场景。
 
-有劳在翻译之前移步 [wiki](https://github.com/vuejs/cn.vuejs.org/wiki) 了解相关注意事项。
+## 许可证
 
-**注意：**
-
-1. 原则上这里只进行英文版对应的翻译工作，如果觉得原文有改进之处，或任何不仅针对中文版，而受益所有语言版本的想法，建议直接在英文版仓库讨论。
-2. 原则上这里不适合讨论 Vue 的使用问题，建议相关问题在 Vue 的[官方论坛](https://forum.vuejs.org/) (英文)、[聊天室](https://chat.vuejs.org/) (英文) 或各大主流技术社区讨论，以便得到更多人的帮助和更充分的讨论。
-
-## 致谢
-
-网站在创立之初得到了很多朋友们的帮助，大家一起分工协作完成了整站的翻译工作。[这个页面](https://cn.vuejs.org/about/)集中记录了大家这段时期的努力和付出，以表谢意！
-
-**感谢所有参与翻译的朋友们！**
-
-目前网站以处于维护状态，最新的文档/翻译贡献情况可以参阅 GitHub 提供的 [contributors](https://github.com/vuejs/cn.vuejs.org/graphs/contributors) 页面。
+见根目录 [LICENSE](LICENSE)（与 `bili-comment-bot/LICENSE` 一致，上游 BiliCommentBot MIT）。

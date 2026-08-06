@@ -1,13 +1,18 @@
 # 本目录说明（vendored）
 
 上游项目：[Janson20/BiliCommentBot](https://github.com/Janson20/BiliCommentBot)（MIT）  
-用途：监控**自己账号视频**下的新评论，调用 DeepSeek 自动回复。
+用途：调用 DeepSeek 自动回复 B 站评论，支持两种模式：
+
+1. **自己视频**：监控自己投稿视频下的新评论并回复  
+2. **回复我的**：监控消息中心「回复我的」，别人回复你在任意视频下的评论时自动回（首次启用只追新通知）
 
 本仓库在 `bili-comment-bot/` 内嵌该项目，便于在当前分支上继续改。相对上游的本地改动：
 
 - `server.py`：支持用环境变量覆盖密钥（`DEEPSEEK_API_KEY`、`BILIBILI_COOKIE` 等）
 - 默认模型改为 `deepseek-chat`
 - 默认 system prompt 改为通用友善回复
+- 双模式：`reply.own_videos_enabled` / `reply.reply_to_me_enabled`
+- 去 AI 味默认提示词；防刷：`per_user_interval` / `daily_ai_limit` / `skip_trivial`（无对外 API，不做 IP 黑白名单）
 
 ## 快速启动
 
