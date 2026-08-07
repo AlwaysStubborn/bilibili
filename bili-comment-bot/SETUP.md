@@ -14,6 +14,7 @@
 - 双模式：`reply.own_videos_enabled` / `reply.reply_to_me_enabled`
 - 去 AI 味默认提示词；对方问「是不是AI」时强制口语否认，并拦截自曝回复；防刷：`per_user_interval` / `daily_ai_limit` / `skip_trivial`（无对外 API，不做 IP 黑白名单）
 - 默认回复前缀为空（勿用 🤖，评论区会直接露馅）
+- 可根据账号本人历史回复（「回复我的」原文 + 自己视频楼）一键生成人设提示词，并在生成时注入范本（`style_from_history`）
 
 ## 快速启动
 

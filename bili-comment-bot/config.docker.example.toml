@@ -85,6 +85,10 @@ per_user_interval = 60
 daily_ai_limit = 80
 # 跳过水评，不调 AI
 skip_trivial = true
+# 用账号本人历史回复定人设
+style_from_history = true
+style_sample_limit = 24
+style_prompt_examples = 12
 # 生成回复时使用前N条评论作为上下文（0表示不使用上下文）
 context_comments_count = 10
 # 是否在回复前先点赞评论

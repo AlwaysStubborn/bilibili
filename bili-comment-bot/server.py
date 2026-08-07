@@ -340,6 +340,52 @@ def api_history_clear():
         return jsonify({"ok": False, "message": str(e)})
 
 
+@app.route("/api/style/samples", methods=["GET"])
+def api_style_samples():
+    bot = get_bot()
+    samples = bot._style_samples or []
+    return jsonify({"ok": True, "count": len(samples), "samples": samples})
+
+
+@app.route("/api/style/refresh", methods=["POST"])
+def api_style_refresh():
+    """根据账号本人历史回复采集范本，并写回 system_prompt。"""
+    data = request.get_json(silent=True) or {}
+    apply_prompt = data.get("apply_prompt", True)
+    scan_videos = data.get("scan_videos", True)
+    try:
+        bot = get_bot()
+        result = bot.refresh_style_from_history(
+            apply_prompt=bool(apply_prompt),
+            scan_videos=bool(scan_videos),
+        )
+        if result.get("applied"):
+            cfg = load_config()
+            cfg.setdefault("deepseek", {})["system_prompt"] = result["prompt"]
+            cfg.setdefault("reply", {})["style_from_history"] = True
+            if not save_config(cfg):
+                return jsonify({"ok": False, "message": "提示词已生成，但写入配置失败"})
+            bot.reload_config(cfg)
+        return jsonify({
+            "ok": True,
+            "message": (
+                f"已根据 {result.get('count', 0)} 条历史回复更新提示词"
+                if result.get("applied")
+                else (
+                    "未采到本人历史回复，请确认 Cookie/UID，或先有「回复我的」/自己视频下的本人评论"
+                    if not result.get("count")
+                    else f"已采集 {result.get('count', 0)} 条范本（未写回提示词）"
+                )
+            ),
+            "count": result.get("count", 0),
+            "applied": result.get("applied", False),
+            "prompt": result.get("prompt", ""),
+            "samples": result.get("samples", [])[:20],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)})
+
+
 @app.route("/api/logs", methods=["GET"])
 def api_logs():
     return jsonify({"ok": True, "logs": ws_log_handler.log_buffer[-200:]})

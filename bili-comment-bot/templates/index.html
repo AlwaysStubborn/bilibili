@@ -335,7 +335,20 @@
           </div>
           <div class="form-group">
             <label class="form-label">系统提示词（定义 AI 角色和回复风格）</label>
-            <textarea class="form-textarea" id="cfg-deepseek-system_prompt" rows="5"></textarea>
+            <textarea class="form-textarea" id="cfg-deepseek-system_prompt" rows="8"></textarea>
+            <div class="form-hint" style="margin-top:8px">
+              可一键根据你账号本人的历史回复（「回复我的」原文 + 自己视频楼里的本人评论）生成人设提示词。
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+              <button type="button" class="btn btn-primary" id="btn-style-refresh" onclick="refreshStylePrompt()">
+                根据历史回复生成提示词
+              </button>
+              <label class="form-check" style="margin:0">
+                <input type="checkbox" id="cfg-reply-style_from_history" checked>
+                生成回复时注入历史范本
+              </label>
+            </div>
+            <div id="style-refresh-status" class="form-hint" style="margin-top:8px"></div>
           </div>
         </div>
       </div>
@@ -938,6 +951,7 @@ function loadConfig() {
     set('cfg-reply-per_user_interval', r.per_user_interval ?? 60);
     set('cfg-reply-daily_ai_limit', r.daily_ai_limit ?? 80);
     set('cfg-reply-skip_trivial', r.skip_trivial !== false);
+    set('cfg-reply-style_from_history', r.style_from_history !== false);
     set('cfg-reply-like_enabled', r.like_enabled);
     set('cfg-reply-like_user_video_enabled', r.like_user_video_enabled);
     set('cfg-reply-like_user_video_only_followers', r.like_user_video_only_followers);
@@ -991,6 +1005,39 @@ function loadConfig() {
   });
 }
 
+function refreshStylePrompt() {
+  const status = document.getElementById('style-refresh-status');
+  const btn = document.getElementById('btn-style-refresh');
+  if (status) status.textContent = '正在采集你的历史回复并生成提示词…（可能需要一点时间）';
+  if (btn) btn.disabled = true;
+  fetch('/api/style/refresh', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({apply_prompt: true, scan_videos: true}),
+  }).then(r => r.json()).then(d => {
+    if (btn) btn.disabled = false;
+    if (!d.ok) {
+      if (status) status.textContent = '失败：' + (d.message || '未知错误');
+      showToast(d.message || '生成失败', 'error');
+      return;
+    }
+    if (d.prompt) {
+      const el = document.getElementById('cfg-deepseek-system_prompt');
+      if (el) el.value = d.prompt;
+    }
+    const box = document.getElementById('cfg-reply-style_from_history');
+    if (box) box.checked = true;
+    if (status) {
+      status.textContent = d.message + (d.count ? `（预览已写入上方提示词，记得保存配置）` : '');
+    }
+    showToast(d.message || '已更新', (d.applied || d.count > 0) ? 'success' : 'error');
+  }).catch(err => {
+    if (btn) btn.disabled = false;
+    if (status) status.textContent = '请求失败：' + err;
+    showToast('请求失败', 'error');
+  });
+}
+
 function saveConfig() {
   function get(id) {
     const el = document.getElementById(id);
@@ -1027,6 +1074,7 @@ function saveConfig() {
       per_user_interval: get('cfg-reply-per_user_interval'),
       daily_ai_limit: get('cfg-reply-daily_ai_limit'),
       skip_trivial: get('cfg-reply-skip_trivial'),
+      style_from_history: get('cfg-reply-style_from_history'),
       like_enabled: get('cfg-reply-like_enabled'),
       like_user_video_enabled: get('cfg-reply-like_user_video_enabled'),
       like_user_video_only_followers: get('cfg-reply-like_user_video_only_followers'),
