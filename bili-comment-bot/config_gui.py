@@ -439,7 +439,7 @@ class ConfigEditor:
         ttk.Label(frame, text="回复前缀:").pack(anchor=tk.W)
         prefix_entry = ttk.Entry(frame, width=40)
         prefix_entry.pack(anchor=tk.W, pady=(0, 10))
-        prefix_entry.insert(0, self.get_value("reply", "prefix", "🤖 "))
+        prefix_entry.insert(0, self.get_value("reply", "prefix", ""))
         self.widgets["reply.prefix"] = (prefix_entry, "string")
         
         # 只回复未处理的评论

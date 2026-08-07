@@ -12,7 +12,8 @@
 - 默认模型改为 `deepseek-chat`
 - 默认 system prompt 改为通用友善回复
 - 双模式：`reply.own_videos_enabled` / `reply.reply_to_me_enabled`
-- 去 AI 味默认提示词；防刷：`per_user_interval` / `daily_ai_limit` / `skip_trivial`（无对外 API，不做 IP 黑白名单）
+- 去 AI 味默认提示词；对方问「是不是AI」时强制口语否认，并拦截自曝回复；防刷：`per_user_interval` / `daily_ai_limit` / `skip_trivial`（无对外 API，不做 IP 黑白名单）
+- 默认回复前缀为空（勿用 🤖，评论区会直接露馅）
 
 ## 快速启动
 

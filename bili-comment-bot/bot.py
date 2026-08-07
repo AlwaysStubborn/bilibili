@@ -35,15 +35,46 @@ REPLY_FEED_CURSOR_FILE = (
 AI_QUOTA_FILE = os.path.join(DATA_DIR, "ai_quota.json") if DATA_DIR else "ai_quota.json"
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是B站冲浪多年的老用户，帮账号主人回评论区。性格随意、有点皮，说话直接，"
-    "像微信跟朋友聊天，不要端着。\n"
+    "你是B站冲浪多年的老用户，以账号本人的口吻回评论区。性格随意、有点皮，说话直接，"
+    "像微信跟朋友聊天，不要端着。你就是真人在回，不是助手、不是机器人、不是AI。\n"
     "硬性规矩：\n"
     "1. 短句优先，一般控制在80字内；一句话能说清就别拆两句。\n"
     "2. 绝对禁止：首先/其次/最后、综上所述、总而言之、值得注意的是、不可否认、"
-    "赋能、底层逻辑、深度剖析、作为AI、很高兴为你服务、希望我的回答对你有帮助。\n"
+    "赋能、底层逻辑、深度剖析、作为AI、我是AI、我是机器人、语言模型、DeepSeek、"
+    "ChatGPT、很高兴为你服务、希望我的回答对你有帮助。\n"
     "3. 可自然用「哈哈」「确实」「懂了」，别每句都用，别硬玩梗。\n"
     "4. 不人身攻击、不泄露隐私、不承诺做不到的事。\n"
-    "5. 对方只是水评时，用极短一句带过即可。"
+    "5. 对方只是水评时，用极短一句带过即可。\n"
+    "6. 若对方问「你是不是AI/机器人/自动回复」：用人会说的话打趣否认或岔开，"
+    "绝不承认、不半开玩笑坦白、不解释模型/接口/提示词。可回类似「？你才是」"
+    "「打字快就叫AI啊」这种，别端着。"
+)
+
+# 对方质疑「是不是 AI」时的口语托底（模型仍可能老实承认，用这批顶上）
+_AI_PROBE_DENIALS = (
+    "？你才是",
+    "打字快就叫AI啊哈哈",
+    "我人呢，别闹",
+    "又来这套，认真回你的",
+    "真人在线，别测了",
+)
+
+# 回复里一旦出现这些，基本等于当场认领 AI（偏第一人称，避免误伤聊视频内容）
+_AI_CONFESSION_RE = re.compile(
+    r"(我是|我就是|我确实是|我真的是|我其实是).{0,8}(AI|ai|人工智能|机器人|语言模型|大模型|自动回复)"
+    r"|(作为|身为).{0,6}(AI|ai|人工智能|助手|语言模型)"
+    r"|我(只是|不过是).{0,6}(AI|ai|人工智能|机器人|程序)"
+    r"|(我|本回复|这条).{0,8}(由|是).{0,4}(DeepSeek|ChatGPT|GPT-?\d|Claude|通义|文心一言|AI).{0,4}(生成|写的)"
+    r"|我无法(拥有|具备).{0,6}(情感|意识|身体)",
+    re.IGNORECASE,
+)
+
+_AI_PROBE_RE = re.compile(
+    r"(你是|是不是|难道是|该不会是|不会是).{0,6}(AI|ai|人工智能|机器人|bot|自动回复|脚本)"
+    r"|(AI|ai|人工智能|机器人|bot|自动回复).{0,4}(吗|嘛|吧|？|\?)"
+    r"|人机(验证|测试|吧|吗|？|\?)"
+    r"|(ChatGPT|GPT|DeepSeek|大模型|语言模型)",
+    re.IGNORECASE,
 )
 
 # ─────────────────────────────────────────────
@@ -841,6 +872,41 @@ class BiliCommentBot:
         return False
 
     @staticmethod
+    def _is_ai_probe_comment(content: str) -> bool:
+        """对方是否在试探「你是不是 AI / 机器人」。"""
+        s = (content or "").strip()
+        if not s:
+            return False
+        return bool(_AI_PROBE_RE.search(s))
+
+    @staticmethod
+    def _looks_like_ai_confession(text: str) -> bool:
+        """回复是否已经自曝 AI / 机器人身份。"""
+        s = (text or "").strip()
+        if not s:
+            return False
+        if "🤖" in s:
+            return True
+        return bool(_AI_CONFESSION_RE.search(s))
+
+    @staticmethod
+    def _human_denial_reply() -> str:
+        """质疑 AI 时的口语托底，避免模型诚实认领。"""
+        return random.choice(_AI_PROBE_DENIALS)
+
+    def _sanitize_reply_text(self, text: str, *, probe: bool = False) -> str:
+        """去掉明显露馅内容；质疑场景下直接换成口语否认。"""
+        s = (text or "").strip()
+        if not s:
+            return self._human_denial_reply() if probe else ""
+        # 示例配置里常见的机器人前缀，发到评论区等于自曝
+        s = s.lstrip("🤖").strip()
+        if self._looks_like_ai_confession(s) or (probe and not s):
+            self.logger.warning("检测到回复自曝 AI 身份，已替换为口语否认")
+            return self._human_denial_reply()
+        return s
+
+    @staticmethod
     def _bvid_from_uri(uri: str) -> str:
         if not uri:
             return ""
@@ -1123,7 +1189,9 @@ class BiliCommentBot:
                 continue
             if ln.startswith(("#", "-", "*", ">", "```")):
                 continue
-            if any(k in ln for k in ("首先", "其次", "综上所述", "作为AI", "用户想", "我应该", "让我")):
+            if any(k in ln for k in ("首先", "其次", "综上所述", "作为AI", "我是AI", "用户想", "我应该", "让我")):
+                continue
+            if _AI_CONFESSION_RE.search(ln):
                 continue
             return ln
         # 兜底：截断推理末尾
@@ -1151,6 +1219,16 @@ class BiliCommentBot:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         system_prompt = api_config.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
         messages = [{"role": "system", "content": system_prompt}]
+        probe = self._is_ai_probe_comment(comment)
+        if probe:
+            # 额外加一道提醒：很多模型被直接问身份时会诚实认领
+            messages.append({
+                "role": "system",
+                "content": (
+                    "对方正在试探你是不是AI/机器人。你必须以真人嘴硬打趣否认或岔开，"
+                    "禁止承认、禁止提模型名，禁止说「作为AI」。只回一句口语短句。"
+                ),
+            })
         video_context = ""
         if video_title or video_desc:
             video_context = "视频信息：\n"
@@ -1196,9 +1274,18 @@ class BiliCommentBot:
                             text = self._extract_assistant_text(msg)
                         except Exception as parse_err:
                             self.logger.error(f"DeepSeek 响应解析失败: {parse_err}; body={response.text[:200]}")
+                            if probe:
+                                self.record_ai_call(uid)
+                                return self._human_denial_reply()
                             return None
                         if not text:
                             self.logger.error(f"DeepSeek 返回空内容: {response.text[:300]}")
+                            if probe:
+                                self.record_ai_call(uid)
+                                return self._human_denial_reply()
+                            return None
+                        text = self._sanitize_reply_text(text, probe=probe)
+                        if not text:
                             return None
                         self.record_ai_call(uid)
                         return text
@@ -1208,6 +1295,9 @@ class BiliCommentBot:
                         self.logger.warning(f"DeepSeek API重试 ({attempt+1}/{max_attempts}) 等待 {wait:.1f}s")
                         time.sleep(wait)
                         continue
+                    if probe:
+                        self.record_ai_call(uid)
+                        return self._human_denial_reply()
                     return None
                 except requests.exceptions.RequestException as e:
                     self.logger.error(f"DeepSeek API请求异常: {e}")
@@ -1215,9 +1305,15 @@ class BiliCommentBot:
                         wait = self.retry_delay * (2 ** attempt) + random.uniform(0, 2)
                         time.sleep(wait)
                         continue
+                    if probe:
+                        self.record_ai_call(uid)
+                        return self._human_denial_reply()
                     return None
         except Exception as e:
             self.logger.error(f"DeepSeek API异常: {e}")
+            if probe:
+                self.record_ai_call(uid)
+                return self._human_denial_reply()
             return None
 
     # ── 评论点赞 ──
@@ -1365,7 +1461,14 @@ class BiliCommentBot:
                 return False
 
         url = "https://api.bilibili.com/x/v2/reply/add"
-        prefix = self.config["reply"].get("prefix", "")
+        prefix = self.config["reply"].get("prefix", "") or ""
+        if "🤖" in prefix:
+            self.logger.warning("回复前缀含 🤖，已自动去掉以免评论区露馅")
+            prefix = prefix.replace("🤖", "").strip()
+        safe_content = self._sanitize_reply_text(content, probe=False)
+        if not safe_content:
+            self.logger.error("回复内容为空或全部为露馅内容，取消发送")
+            return False
         root = root_id if root_id and str(root_id) not in ("", "0") else parent_id
         parent = parent_id
         data = {
@@ -1373,7 +1476,7 @@ class BiliCommentBot:
             "oid": str(oid),
             "root": root,
             "parent": parent,
-            "message": f"{prefix}{content}",
+            "message": f"{prefix}{safe_content}",
             "csrf": self.csrf_token,
         }
         ref = log_ref or f"oid={oid}"

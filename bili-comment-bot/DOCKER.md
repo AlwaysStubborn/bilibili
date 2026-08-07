@@ -54,7 +54,7 @@ system_prompt = "你是一个友善的B站游戏区Minecraft UP主，请对评�
 
 [reply]
 enabled = true
-prefix = "🤖 "
+prefix = ""
 only_new = true
 max_process = 10
 reply_delay = 2
